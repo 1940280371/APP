@@ -12,11 +12,11 @@ jobs:
       - name: 1. 拉取本仓库（含我们的配置与脚本）
         uses: actions/checkout@v4
 
-      - name: 2. 准备 JDK 17
+      - name: 2. 准备 JDK 11
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '11'
 
       # ===== 关键：准备 Python 3.8（Chaquopy 构建车轮需要，版本需与上游匹配） =====
       - name: 2.1 准备 Python 3.8
@@ -82,7 +82,7 @@ jobs:
           echo "===== 根目录 ====="
           ls -1
 
-      - name: 6. 编译 Debug APK（日志同时存盘，方便下载）
+      - name: 6. 编译 Debug APK（自动选模块 + JDK 降级兜底）
         working-directory: CatVod
         run: |
           chmod +x gradlew
@@ -95,6 +95,7 @@ jobs:
 
           # 确认 python3 指向我们装的 3.8
           echo "===== python3 版本 ====="
+          which python3
           python3 --version
 
           # 自动找出真正的 application 模块（默认 :app）
@@ -111,44 +112,21 @@ jobs:
 
           JVM_ARGS="-Xmx3g -XX:MaxMetaspaceSize=1g"
 
-          echo "===== 开始编译（完整日志写入 build.log） ====="
-          set +e
-          ./gradlew "${MODULE}:assembleDebug" --no-daemon --stacktrace "-Dorg.gradle.jvmargs=$JVM_ARGS" 2>&1 | tee build.log
-          BUILD_RC=${PIPESTATUS[0]}
-          echo "BUILD_RC=$BUILD_RC"
-          exit $BUILD_RC
+          echo "===== 尝试 1：当前 JDK ($(java -version 2>&1 | head -1)) ====="
+          if ./gradlew "${MODULE}:assembleDebug" --no-daemon --stacktrace "-Dorg.gradle.jvmargs=$JVM_ARGS"; then
+            echo "BUILD_OK_WITH_CURRENT_JDK"
+          else
+            echo "===== 尝试 2：切换 JDK 11 重试 ====="
+            sudo apt-get install -y -qq openjdk-11-jdk
+            export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+            export PATH="$JAVA_HOME/bin:$PATH"
+            java -version 2>&1 | head -1
+            ./gradlew "${MODULE}:assembleDebug" --no-daemon --stacktrace "-Dorg.gradle.jvmargs=$JVM_ARGS"
+          fi
 
       - name: 7. 上传成品 APK
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: fengye-app-debug
           path: CatVod/**/build/outputs/apk/**/*.apk
           if-no-files-found: error
-
-      # ===== 失败也不怕：自动把关键报错行捞出来，不用你翻 1000 行 =====
-      - name: 8. 提取报错摘要（小白友好，只看这几行）
-        if: always()
-        working-directory: CatVod
-        run: |
-          echo "=========================================="
-          echo "           报 错 摘 要（只看这里）"
-          echo "=========================================="
-          echo ""
-          echo "--- 1) 关键报错行（FAILED / error / 异常 / 找不到包）---"
-          grep -nE "FAILED|What went wrong|Exception in|error:|Could not find|Process completed with exit code|cssselect|pyquery|buildPython" build.log | tail -40 || echo "（没有匹配到上述关键字）"
-          echo ""
-          echo "--- 2) 日志最后 50 行 ---"
-          tail -50 build.log || echo "（没有日志文件）"
-          echo ""
-          echo "=========================================="
-          echo "完整日志已打包成 build-log 文件，可在本页面右侧『Artifacts』下载用记事本打开"
-          echo "=========================================="
-
-      - name: 9. 上传完整构建日志（可下载）
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: CatVod/build.log
-          if-no-files-found: warn
