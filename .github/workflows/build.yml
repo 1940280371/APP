@@ -45,8 +45,8 @@ jobs:
           echo "===== CatVod/local.properties ====="
           cat CatVod/local.properties
 
-      # ===== 关键：修复上游写死的 Windows buildPython 路径（本次失败的根因） =====
-      - name: 4.2 修复 buildPython 写死的 Windows 路径
+      # ===== 关键：修复上游写死的 Windows buildPython 路径 + 移除会导致失败的 pyquery 依赖 =====
+      - name: 4.2 修复 buildPython 路径并移除 pyquery 依赖
         run: |
           FILE="CatVod/pyramid/build.gradle"
           if grep -n 'buildPython' "$FILE"; then
@@ -56,6 +56,16 @@ jobs:
           else
             echo "未找到 buildPython，跳过"
           fi
+          # pyquery 会拉入 cssselect>=1.5.0，而 Chaquopy 的 Android wheel 仓库里没有对应包，
+          # 导致 generatePythonRequirements 失败；枫叶壳子基本用不到 pyquery，直接移除该行
+          if grep -n 'install "pyquery"' "$FILE"; then
+            sed -i '/install "pyquery"/d' "$FILE"
+            echo "===== 已移除 pyquery 依赖 ====="
+          else
+            echo "未找到 pyquery，跳过"
+          fi
+          echo "===== pyramid 当前 pip 依赖 ====="
+          grep -n 'install' "$FILE" || true
 
       - name: 5. 烧入枫叶配置
         run: bash fengye-catvod/bake.sh CatVod app
