@@ -18,55 +18,79 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 3. 准备 Android SDK（用 runner 预装的，不再依赖第三方 action）
+      - name: 3. 准备 Android SDK（用 runner 预装的）
         run: |
           export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
           export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" >/dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
+          echo "SDK at: $ANDROID_SDK_ROOT"
+          ls "$ANDROID_SDK_ROOT/platforms" 2>/dev/null || true
 
-      - name: 4. 克隆 CatVod 系源码（takagen99/Box，app 模块）
+      - name: 4. 克隆 CatVod 系源码（takagen99/Box）
         run: git clone --depth 1 https://github.com/takagen99/Box CatVod
 
-      - name: 5. 烧入枫叶配置（自动改默认配置地址）
+      - name: 4.1 补写 local.properties（关键修复）
+        run: |
+          SDK_DIR="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          echo "sdk.dir=$SDK_DIR" > CatVod/local.properties
+          echo "===== CatVod/local.properties ====="
+          cat CatVod/local.properties
+
+      - name: 5. 烧入枫叶配置
         run: bash fengye-catvod/bake.sh CatVod app
 
-      - name: 5.1 打印构建环境诊断
+      - name: 5.1 构建环境诊断
         working-directory: CatVod
         run: |
-          echo "===== java 版本 ====="
-          java -version 2>&1 || true
           echo "===== gradle wrapper ====="
           cat gradle/wrapper/gradle-wrapper.properties 2>/dev/null || true
-          echo "===== AGP / gradle插件版本 ====="
-          grep -rh "com.android.tools.build:gradle" build.gradle build.gradle.kts app/build.gradle app/build.gradle.kts 2>/dev/null | head -5 || true
-          echo "===== 项目模块 ====="
+          echo "===== AGP 版本 ====="
+          grep -rh "com.android.tools.build:gradle" build.gradle build.gradle.kts 2>/dev/null | head -5 || true
+          echo "===== settings.gradle ====="
           cat settings.gradle 2>/dev/null || cat settings.gradle.kts 2>/dev/null || true
+          echo "===== 根目录 ====="
+          ls -1
 
-      - name: 6. 编译 Debug APK（JDK 17 失败则自动降级 JDK 11）
+      - name: 6. 编译 Debug APK（自动选模块 + JDK 降级兜底）
         working-directory: CatVod
         run: |
           chmod +x gradlew
-          echo "===== 尝试 1：当前 JDK ====="
-          if ./gradlew :app:assembleDebug --no-daemon \
-               -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g"; then
-            echo "BUILD_OK"
+          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+
+          # 自动找出真正的 application 模块（默认 :app）
+          MODULE=":app"
+          if ! grep -q "com.android.application" app/build.gradle app/build.gradle.kts 2>/dev/null; then
+            for d in */; do
+              if grep -q "com.android.application" "$d/build.gradle" "$d/build.gradle.kts" 2>/dev/null; then
+                MODULE=":${d%/}"
+                break
+              fi
+            done
+          fi
+          echo "使用模块: $MODULE"
+
+          JVM_ARGS="-Xmx3g -XX:MaxMetaspaceSize=1g"
+
+          echo "===== 尝试 1：当前 JDK ($(java -version 2>&1 | head -1)) ====="
+          if ./gradlew "${MODULE}:assembleDebug" --no-daemon --stacktrace "-Dorg.gradle.jvmargs=$JVM_ARGS"; then
+            echo "BUILD_OK_WITH_CURRENT_JDK"
           else
-            echo "===== 尝试 2：切换到 JDK 11 ====="
+            echo "===== 尝试 2：切换 JDK 11 重试 ====="
             sudo apt-get update -qq
             sudo apt-get install -y -qq openjdk-11-jdk
             export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
             export PATH="$JAVA_HOME/bin:$PATH"
-            java -version 2>&1 || true
-            ./gradlew :app:assembleDebug --no-daemon \
-              -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g"
+            java -version 2>&1 | head -1
+            ./gradlew "${MODULE}:assembleDebug" --no-daemon --stacktrace "-Dorg.gradle.jvmargs=$JVM_ARGS"
           fi
 
       - name: 7. 上传成品 APK
         uses: actions/upload-artifact@v4
         with:
           name: fengye-app-debug
-          path: CatVod/app/build/outputs/apk/debug/*.apk
+          path: CatVod/**/build/outputs/apk/**/*.apk
           if-no-files-found: error
