@@ -26,8 +26,6 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
           sdkmanager "platforms;android-34" "build-tools;34.0.0" >/dev/null || true
-          echo "--- 已安装组件（节选）---"
-          sdkmanager --list_installed 2>/dev/null | head -30 || true
 
       - name: 4. 克隆 CatVod 系源码（takagen99/Box，app 模块）
         run: git clone --depth 1 https://github.com/takagen99/Box CatVod
@@ -35,11 +33,36 @@ jobs:
       - name: 5. 烧入枫叶配置（自动改默认配置地址）
         run: bash fengye-catvod/bake.sh CatVod app
 
-      - name: 6. 编译 Debug APK（自动用调试密钥签名，可直接安装）
+      - name: 5.1 打印构建环境诊断
+        working-directory: CatVod
+        run: |
+          echo "===== java 版本 ====="
+          java -version 2>&1 || true
+          echo "===== gradle wrapper ====="
+          cat gradle/wrapper/gradle-wrapper.properties 2>/dev/null || true
+          echo "===== AGP / gradle插件版本 ====="
+          grep -rh "com.android.tools.build:gradle" build.gradle build.gradle.kts app/build.gradle app/build.gradle.kts 2>/dev/null | head -5 || true
+          echo "===== 项目模块 ====="
+          cat settings.gradle 2>/dev/null || cat settings.gradle.kts 2>/dev/null || true
+
+      - name: 6. 编译 Debug APK（JDK 17 失败则自动降级 JDK 11）
         working-directory: CatVod
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+          echo "===== 尝试 1：当前 JDK ====="
+          if ./gradlew :app:assembleDebug --no-daemon \
+               -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g"; then
+            echo "BUILD_OK"
+          else
+            echo "===== 尝试 2：切换到 JDK 11 ====="
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq openjdk-11-jdk
+            export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+            export PATH="$JAVA_HOME/bin:$PATH"
+            java -version 2>&1 || true
+            ./gradlew :app:assembleDebug --no-daemon \
+              -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g"
+          fi
 
       - name: 7. 上传成品 APK
         uses: actions/upload-artifact@v4
