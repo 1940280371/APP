@@ -1,132 +1,66 @@
 name: 编译枫叶影视APK
 
 on:
-  workflow_dispatch:
   push:
-分支: [ main, master ]
+分支: [ main ]
+  workflow_dispatch: # 支持网页手动触发编译
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      GRADLE_OPTS: "-Xmx4g -Dorg.gradle.parallel=false -Dorg.gradle.daemon=false"
     steps:
+      - name: 布置工作
+        uses: actions/checkout@v4
+
       - name: 1. 拉取本仓库（含我们的配置与脚本）
         uses: actions/checkout@v4
 
       - name: 2. 准备 JDK 11
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
           java-version: '11'
+          distribution: 'temurin'
 
-      # ===== 关键：准备 Python 3.8（Chaquopy 构建车轮需要，版本需与上游匹配） =====
       - name: 2.1 准备 Python 3.8
         uses: actions/setup-python@v5
         with:
-          python-version: '3.8'
+          python-version: "3.8"
 
       - name: 3. 准备 Android SDK（用 runner 预装的）
-        run: |
-          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
-          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
-          echo "SDK at: $ANDROID_SDK_ROOT"
-          ls "$ANDROID_SDK_ROOT/platforms" 2>/dev/null || true
+        uses: android-actions/setup-android@v3
 
-      - name: 4. 克隆 CatVod 系源码（takagen99/Box）
-        run: git clone --depth 1 https://github.com/takagen99/Box CatVod
+      - name: 4. 克隆CatVod系源码 (XiaoRanLiu3119/TVBoxOS-Mobile 竖屏)
+        run: |
+          rm -rf Box
+          git clone https://github.com/XiaoRanLiu3119/TVBoxOS-Mobile.git Box
 
       - name: 4.1 补写 local.properties（关键修复）
         run: |
-          SDK_DIR="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
-          echo "sdk.dir=$SDK_DIR" > CatVod/local.properties
-          echo "===== CatVod/local.properties ====="
-          cat CatVod/local.properties
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > Box/local.properties
 
-      # ===== 关键：修复上游写死的 Windows buildPython 路径 + 移除会导致失败的 pyquery 依赖 =====
-      - name: 4.2 修复 buildPython 路径并移除 pyquery 依赖
-        run: |
-          FILE="CatVod/pyramid/build.gradle"
-          if grep -n 'buildPython' "$FILE"; then
-            sed -i -E 's#buildPython\("[^"]*"\)#buildPython("python3")#' "$FILE"
-            echo "===== 修复后的 buildPython 行 ====="
-            grep -n 'buildPython' "$FILE"
-          else
-            echo "未找到 buildPython，跳过"
-          fi
-          # pyquery 会拉入 cssselect>=1.5.0，而 Chaquopy 的 Android wheel 仓库里没有对应包，
-          # 导致 generatePythonRequirements 失败；枫叶壳子基本用不到 pyquery，直接移除该行
-          if grep -n 'install "pyquery"' "$FILE"; then
-            sed -i '/install "pyquery"/d' "$FILE"
-            echo "===== 已移除 pyquery 依赖 ====="
-          else
-            echo "未找到 pyquery，跳过"
-          fi
-          echo "===== pyramid 当前 pip 依赖 ====="
-          grep -n 'install' "$FILE" || true
+      # 竖屏源码无python依赖，注释掉这一段，防止报错
+      # - name: 4.2 修复 buildPython 路径并移除 pyquery 依赖
+      #   run: echo 跳过python修复
 
       - name: 5. 烧入枫叶配置
-        run: bash fengye-catvod/bake.sh CatVod app
+        run: |
+          cp -f ./config.json Box/app/src/main/assets/config.json
 
       - name: 5.1 构建环境诊断
-        working-directory: CatVod
         run: |
-          echo "===== gradle wrapper ====="
-          cat gradle/wrapper/gradle-wrapper.properties 2>/dev/null || true
-          echo "===== AGP 版本 ====="
-          grep -rh "com.android.tools.build:gradle" build.gradle build.gradle.kts 2>/dev/null | head -5 || true
-          echo "===== settings.gradle ====="
-          cat settings.gradle 2>/dev/null || cat settings.gradle.kts 2>/dev/null || true
-          echo "===== 根目录 ====="
-          ls -1
+          cd Box
+          ./gradlew --version
 
-      - name: 6. 编译 Debug APK（自动选模块 + JDK 降级兜底）
-        working-directory: CatVod
+      - name: 6. 编译 Debug APK（自动选模块 + JDK11兜底）
         run: |
-          chmod +x gradlew
-          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
-          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          cd Box
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
 
-          # Chaquopy 的 lxml 等带 C 扩展，若拉不到预编译 wheel 需要本机编译器兜底
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential
-
-          # 确认 python3 指向我们装的 3.8
-          echo "===== python3 版本 ====="
-          which python3
-          python3 --version
-
-          # 自动找出真正的 application 模块（默认 :app）
-          MODULE=":app"
-          if ! grep -q "com.android.application" app/build.gradle app/build.gradle.kts 2>/dev/null; then
-            for d in */; do
-              if grep -q "com.android.application" "$d/build.gradle" "$d/build.gradle.kts" 2>/dev/null; then
-                MODULE=":${d%/}"
-                break
-              fi
-            done
-          fi
-          echo "使用模块: $MODULE"
-
-          JVM_ARGS="-Xmx3g -XX:MaxMetaspaceSize=1g"
-
-          echo "===== 尝试 1：当前 JDK ($(java -version 2>&1 | head -1)) ====="
-          if ./gradlew "${MODULE}:assembleDebug" --no-daemon --stacktrace "-Dorg.gradle.jvmargs=$JVM_ARGS"; then
-            echo "BUILD_OK_WITH_CURRENT_JDK"
-          else
-            echo "===== 尝试 2：切换 JDK 11 重试 ====="
-            sudo apt-get install -y -qq openjdk-11-jdk
-            export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-            export PATH="$JAVA_HOME/bin:$PATH"
-            java -version 2>&1 | head -1
-            ./gradlew "${MODULE}:assembleDebug" --no-daemon --stacktrace "-Dorg.gradle.jvmargs=$JVM_ARGS"
-          fi
-
-      - name: 7. 上传成品 APK
+      - name: 7. 上传成品APK
         uses: actions/upload-artifact@v4
         with:
-          name: fengye-app-debug
-          path: CatVod/**/build/outputs/apk/**/*.apk
-          if-no-files-found: error
+          name: 竖屏TVBox-APK
+          path: Box/app/build/outputs/apk/debug/app-debug.apk
