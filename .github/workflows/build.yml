@@ -29,8 +29,8 @@ jobs:
           echo "--- 已安装组件（节选）---"
           sdkmanager --list_installed 2>/dev/null | head -30 || true
 
-      - name: 4. 克隆 CatVod 手机版源码（app 模块=竖屏）
-        run: git clone --depth 1 https://github.com/FongMi/CatVod
+      - name: 4. 克隆 CatVod 系源码（takagen99/Box，app 模块）
+        run: git clone --depth 1 https://github.com/takagen99/Box CatVod
 
       - name: 5. 烧入枫叶配置（自动改默认配置地址）
         run: bash fengye-catvod/bake.sh CatVod app
