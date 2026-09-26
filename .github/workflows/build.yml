@@ -18,6 +18,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # ===== 关键：准备 Python 3.8（Chaquopy 构建车轮需要，版本需与上游匹配） =====
+      - name: 2.1 准备 Python 3.8
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+
       - name: 3. 准备 Android SDK（用 runner 预装的）
         run: |
           export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
@@ -38,6 +44,18 @@ jobs:
           echo "sdk.dir=$SDK_DIR" > CatVod/local.properties
           echo "===== CatVod/local.properties ====="
           cat CatVod/local.properties
+
+      # ===== 关键：修复上游写死的 Windows buildPython 路径（本次失败的根因） =====
+      - name: 4.2 修复 buildPython 写死的 Windows 路径
+        run: |
+          FILE="CatVod/pyramid/build.gradle"
+          if grep -n 'buildPython' "$FILE"; then
+            sed -i -E 's#buildPython\("[^"]*"\)#buildPython("python3")#' "$FILE"
+            echo "===== 修复后的 buildPython 行 ====="
+            grep -n 'buildPython' "$FILE"
+          else
+            echo "未找到 buildPython，跳过"
+          fi
 
       - name: 5. 烧入枫叶配置
         run: bash fengye-catvod/bake.sh CatVod app
@@ -61,6 +79,15 @@ jobs:
           export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
           export ANDROID_HOME="$ANDROID_SDK_ROOT"
 
+          # Chaquopy 的 lxml 等带 C 扩展，若拉不到预编译 wheel 需要本机编译器兜底
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential
+
+          # 确认 python3 指向我们装的 3.8
+          echo "===== python3 版本 ====="
+          which python3
+          python3 --version
+
           # 自动找出真正的 application 模块（默认 :app）
           MODULE=":app"
           if ! grep -q "com.android.application" app/build.gradle app/build.gradle.kts 2>/dev/null; then
@@ -80,7 +107,6 @@ jobs:
             echo "BUILD_OK_WITH_CURRENT_JDK"
           else
             echo "===== 尝试 2：切换 JDK 11 重试 ====="
-            sudo apt-get update -qq
             sudo apt-get install -y -qq openjdk-11-jdk
             export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
             export PATH="$JAVA_HOME/bin:$PATH"
